@@ -1,6 +1,6 @@
 from sqlalchemy import Column, Integer, String, Boolean, ForeignKey
 from sqlalchemy.dialects.mysql import NUMERIC
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, declarative_base
 
 
 
@@ -14,7 +14,7 @@ class Provider(Base):
 
     id = Column(Integer, primary_key=True)
     name = Column(String(100), unique=True)
-    email = Column(String(255))
+    email = Column(String(255),nullable=False)
 
     games = relationship("Game", back_populates="provider")
 
