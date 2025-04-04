@@ -3,7 +3,6 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from alembic import context
 import asyncio
 
-# Импортируем метаданные вашего проекта (обычно из models.py)
 from models import Base
 
 config = context.config
