@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
-from models import Game, Provider
-from schemas import GameCreate, ProviderCreate, ProviderResponse
-from database import get_db
+from app.models import Game, Provider
+from app.schemas import GameCreate, ProviderCreate, ProviderResponse
+from app.database import get_db
 from sqlalchemy.future import select
 
 app = FastAPI()
