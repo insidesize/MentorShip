@@ -23,3 +23,7 @@ async def read_provider(provider_id: int, db: AsyncSession = Depends(get_db)):
     if not provider:
         raise HTTPException(status_code=404, detail="Provider not found")
     return provider
+
+
+#TODO
+#games endpoints
