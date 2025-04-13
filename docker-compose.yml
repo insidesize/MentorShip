@@ -1,33 +1,26 @@
-version: '3.8'
-
 services:
-  db:
+  postgres:
     image: postgres:13
     environment:
       POSTGRES_USER: swager
       POSTGRES_PASSWORD: NikFast65
       POSTGRES_DB: swagadb
-    volumes:
-      - postgres_data:/var/lib/postgresql/data/
     ports:
       - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
 
-
-
-  web:
+  fastapi:
     build: .
-    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
       - .:/app
     ports:
       - "8000:8000"
     depends_on:
-      - db
-
+      - postgres
     environment:
-      DATABASE_URL: postgres://swager:NikFast65@db:5432/swagadb
-
+      DATABASE_URL: postgresql+asyncpg://swager:NikFast65@postgres:5432/swagadb
 
 volumes:
   postgres_data:
-

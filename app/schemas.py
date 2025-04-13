@@ -8,10 +8,18 @@ class GameCreate(BaseModel):
 
     class Config:
         json_schema_extra = {
-            "title": "Cyberpunk 2077",
-            "price": 59.99,
+            "title": "Как достать соседа",
+            "price": 52,
             "provider_id": 1
         }
+
+
+class GameResponse(GameCreate):
+    id: int
+
+    class Config:
+        orm_mode = True
+
 
 class ProviderCreate(BaseModel):
 
@@ -26,3 +34,6 @@ class ProviderCreate(BaseModel):
 
 class ProviderResponse(ProviderCreate):
     id: int
+
+    class Config:
+        orm_mode = True
