@@ -9,3 +9,5 @@ pydantic
 asyncpg 
 
 alembic 
+
+redis
