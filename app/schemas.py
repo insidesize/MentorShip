@@ -37,3 +37,6 @@ class ProviderResponse(ProviderCreate):
 
     class Config:
         orm_mode = True
+
+class SearchQuery(BaseModel):
+    query: str

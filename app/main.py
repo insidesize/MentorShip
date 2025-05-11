@@ -1,148 +1,80 @@
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.models import Game, Provider
-from app.schemas import GameCreate, ProviderCreate, ProviderResponse
-from app.database import get_db
-from sqlalchemy.future import select
-from . import models,schemas
-from sqlalchemy.orm import Session
-from sqlalchemy.exc import IntegrityError
-from app.cache import get_from_cache, set_to_cache
+from fastapi import FastAPI, HTTPException, Response, BackgroundTasks
+from app.schemas import SearchQuery
+from app.kafka_producer import send_search_task
+from app.cache import redis_cache, get_cached_result, set_cached_result
+from app.database import save_search_results_to_db
+import asyncio
+import time
+import uuid
 import json
-import redis.asyncio as redis
+import logging
+from app.kafka_producer import kafka_producer
 
 app = FastAPI()
 
-redis_client = redis.from_url("redis://localhost", decode_responses=True)
+TIMEOUT = 10  # секунды ожидания результата из Kafka
+logger = logging.getLogger(__name__)
 
-CACHE_TTL = 300
 
-@app.post("/providers/", response_model=ProviderResponse)
-async def create_provider(provider: ProviderCreate, db: AsyncSession = Depends(get_db)):
-    db_provider = Provider(**provider.dict())
-    db.add(db_provider)
-    await db.commit()
-    await db.refresh(db_provider)
-    return db_provider
 
-@app.get("/providers/{provider_id}", response_model=schemas.ProviderResponse)
-async def read_provider(provider_id: int, db: AsyncSession = Depends(get_db)):
-    cache_key = f"provider:{provider_id}"
-    cached_provider = await redis_client.get(cache_key)
-    
-    if cached_provider:
-        return schemas.ProviderResponse(**json.loads(cached_provider))
 
-    result = await db.execute(select(models.Provider).filter(models.Provider.id == provider_id))
-    provider = result.scalars().first()
+@app.post("/search", response_model=dict)
+async def search_handler(
+    search_query: SearchQuery,
+    response: Response,
+    background_tasks: BackgroundTasks,
+):
+    start_time = time.perf_counter()
+    query = search_query.query
+    cache_key = f"search:{query}"
 
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+    # Проверка кэша
+    cached = await redis_cache.get(cache_key)
+    if cached:
+        cached_data = json.loads(cached)
+        return {
+            "request_id": cached_data["request_id"],
+            "games": cached_data["games"],
+            "providers": cached_data["providers"],
+        }
 
-    provider_data = schemas.ProviderResponse.from_orm(provider).dict()
-    await redis_client.set(cache_key, json.dumps(provider_data), ex=CACHE_TTL)
-    return provider_data
+    # Запрос в Kafka
+    request_id = str(uuid.uuid4())
+    await send_search_task({**search_query.dict(), "request_id": request_id})
 
-@app.put("/providers/{provider_id}", response_model=schemas.ProviderResponse)
-async def update_provider(provider_id: int, provider_data: schemas.ProviderCreate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.Provider).filter(models.Provider.id == provider_id))
-    provider = result.scalars().first()
+    # Ожидание результата
+    polling_interval = 0.1
+    total_wait = 0
+    while total_wait < TIMEOUT:
+        result = await redis_cache.get(cache_key)
+        if result:
+            data = json.loads(result)
+            games = data["games"]
+            providers = data["providers"]
 
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
+            # Опционально — сохраняем в БД в фоне
+            background_tasks.add_task(
+                save_search_results_to_db, query, games, providers
+            )
 
-    for key, value in provider_data.dict().items():
-        setattr(provider, key, value)
+            return {
+                "request_id": request_id,
+                "games": games,
+                "providers": providers,
+            }
 
-    await db.commit()
-    await db.refresh(provider)
+        await asyncio.sleep(polling_interval)
+        total_wait += polling_interval
 
-    # обновляем
-    cache_key = f"provider:{provider_id}"
-    await redis_client.set(cache_key, json.dumps(schemas.ProviderResponse.from_orm(provider).dict()), ex=CACHE_TTL)
+    response.status_code = 504
+    raise HTTPException(status_code=504, detail="Search task timed out")
 
-    return provider
+@app.on_event("startup")
+async def startup_event():
+    await kafka_producer.init()
+    logger.info("Kafka producer started")
 
-@app.delete("/providers/{provider_id}")
-async def delete_provider(provider_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.Provider).filter_by(id=provider_id))
-    provider = result.scalars().first()
-
-    if not provider:
-        raise HTTPException(status_code=404, detail="Provider not found")
-
-    try:
-        await db.delete(provider)
-        await db.commit()
-    except IntegrityError:
-        await db.rollback()
-        raise HTTPException(status_code=400, detail="Cannot delete provider with existing games")
-
-    # удаляем
-    cache_key = f"provider:{provider_id}"
-    await redis_client.delete(cache_key)
-
-    return {"detail": "Provider deleted"}
-
-@app.post("/games/", response_model=schemas.GameResponse)
-async def create_game(game: schemas.GameCreate, db: AsyncSession = Depends(get_db)):
-    db_game = models.Game(**game.dict())
-    db.add(db_game)
-    await db.commit()
-    await db.refresh(db_game)
-    return db_game
-
-@app.get("/games/{game_id}", response_model=schemas.GameResponse)
-async def get_game(game_id: int, db: AsyncSession = Depends(get_db)):
-    cache_key = f"game:{game_id}"
-    cached_game = await redis_client.get(cache_key)
-
-    if cached_game:
-        return schemas.GameResponse(**json.loads(cached_game))
-
-    result = await db.execute(select(models.Game).filter_by(id=game_id))
-    game = result.scalars().first()
-
-    if not game:
-        raise HTTPException(status_code=404, detail="Game not found")
-
-    game_data = schemas.GameResponse.from_orm(game).dict()
-    await redis_client.set(cache_key, json.dumps(game_data), ex=CACHE_TTL)
-    return game_data
-
-@app.put("/games/{game_id}", response_model=schemas.GameResponse)
-async def update_game(game_id: int, data: schemas.GameCreate, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.Game).filter_by(id=game_id))
-    game = result.scalars().first()
-
-    if not game:
-        raise HTTPException(status_code=404, detail="Game not found")
-
-    for key, value in data.dict().items():
-        setattr(game, key, value)
-
-    await db.commit()
-    await db.refresh(game)
-
-    # обновление кеша
-    cache_key = f"game:{game_id}"
-    await redis_client.set(cache_key, json.dumps(schemas.GameResponse.from_orm(game).dict()), ex=CACHE_TTL)
-
-    return game
-
-@app.delete("/games/{game_id}")
-async def delete_game(game_id: int, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(models.Game).filter_by(id=game_id))
-    game = result.scalars().first()
-
-    if not game:
-        raise HTTPException(status_code=404, detail="Game not found")
-
-    await db.delete(game)
-    await db.commit()
-
-    # удаление из кеша
-    cache_key = f"game:{game_id}"
-    await redis_client.delete(cache_key)
-
-    return {"detail": "Game deleted"}
+@app.on_event("shutdown")
+async def shutdown_event():
+    await kafka_producer.close()
+    logger.info("Kafka producer stopped")

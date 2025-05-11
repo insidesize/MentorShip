@@ -11,3 +11,5 @@ asyncpg
 alembic 
 
 redis
+
+aiokafka
